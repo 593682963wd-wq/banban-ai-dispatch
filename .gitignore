@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# macOS
+.DS_Store
+
+# Streamlit 本地密钥（永远不要提交）
+.streamlit/secrets.toml
+
+# 运行产物 / 真实数据（公司动态列表、导出结果不入库）
+*.xlsx
+output/

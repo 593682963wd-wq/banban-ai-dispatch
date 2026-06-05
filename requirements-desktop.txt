@@ -1,0 +1,4 @@
+# 桌面端（PySide6）依赖 = 网页依赖 + Qt
+# 本地跑桌面端用：pip3 install -r requirements-desktop.txt
+-r requirements.txt
+PySide6>=6.6

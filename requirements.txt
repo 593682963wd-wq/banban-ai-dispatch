@@ -1,0 +1,6 @@
+# 网页端依赖（Streamlit Community Cloud 读取此文件）
+# 仅 app.py + core 所需，不含桌面 PySide6（Qt 在云端用不上且会拖垮构建）
+# 桌面端请用 requirements-desktop.txt
+pandas>=2.0
+openpyxl>=3.1
+streamlit>=1.30

@@ -1,0 +1,4 @@
+# Streamlit 主题（纯外观，云端与本地通用）
+[theme]
+base = "light"
+primaryColor = "#1f6feb"
