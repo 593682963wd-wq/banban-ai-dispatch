@@ -9,6 +9,7 @@
 
 from .models import Flight, Aircraft, AllocationConfig, AllocationResult, SeatPlan
 from .allocator import allocate, evaluate_split
+from .fleet import KNOWN_FLEET_TAILS
 from .parser import load_dynamic_list, build_aircrafts, COLUMN_ALIASES
 
 __all__ = [
@@ -19,9 +20,10 @@ __all__ = [
     "SeatPlan",
     "allocate",
     "evaluate_split",
+    "KNOWN_FLEET_TAILS",
     "load_dynamic_list",
     "build_aircrafts",
     "COLUMN_ALIASES",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

@@ -31,7 +31,7 @@ from core.excel_writer import write_allocation_excel
 from core.models import AllocationConfig
 from core.parser import build_aircrafts, infer_date, load_dynamic_list, resolve_columns
 
-APP_VERSION = "V 1.0.0"
+APP_VERSION = "V 1.1.0"
 AUTHOR = "王迪"
 
 SEAT1_COLOR = "#E7E9EC"  # 浅灰 → 放行签派一
@@ -88,8 +88,8 @@ class AllocateWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    DETAIL_COLS = ["席位", "机号", "机型", "航班数", "时段A", "时段B",
-                   "C类", "B类", "过夜地", "航段明细"]
+    DETAIL_COLS = ["席位", "机号", "机型", "航班数", "空任务", "时段A", "时段B",
+                   "C类", "B类", "长沙出港", "讲解量", "过夜地", "航段明细"]
 
     def __init__(self):
         super().__init__()
@@ -225,6 +225,7 @@ class MainWindow(QMainWindow):
 
         self._log_msg(
             f"解析成功：{len(active)} 架飞机，"
+            f"空任务 {len([ac for ac in aircrafts if ac.n_flights == 0])} 架，"
             f"{sum(ac.n_flights for ac in active)} 个航班，"
             f"日期 {self.date.strftime('%m-%d') if self.date else '未知'}，"
             f"切分点 {split_txt}。开始分配…"
@@ -257,10 +258,11 @@ class MainWindow(QMainWindow):
         self._fill_table(result)
         self._log_msg(
             f"✓ 分配完成：{s1.name} {s1.n_flights} 班 / {s2.name} {s2.n_flights} 班，"
+            f"空任务 {s1.n_idle_aircraft}/{s2.n_idle_aircraft} 架，"
             f"综合均衡得分 {result.score:.0f}（越低越均衡）。"
         )
         if result.idle_tails:
-            self._log_msg("当日无航班（停场/备用）：" + "、".join(result.idle_tails))
+            self._log_msg("当日无航班（停场/备用，已均分到席位）：" + "、".join(result.idle_tails))
 
     def _summary_html(self, s1, s2, result) -> str:
         def card(seat, color, text_color):
@@ -276,7 +278,9 @@ class MainWindow(QMainWindow):
                 f"<div style='color:#9fb6cc; font-size:12px; margin-bottom:6px;'>"
                 f"飞机 {len(seat.tails)} · 航班 {seat.n_flights} · "
                 f"时段A {seat.n_seg_a} · 时段B {seat.n_seg_b} · "
-                f"C类 {seat.n_c_class} · B类 {seat.n_b_class}</div>"
+                f"C类 {seat.n_c_class} · B类 {seat.n_b_class} · "
+                f"长沙出港 {seat.n_changsha_dep} · 讲解量 {seat.n_briefing} · "
+                f"空任务 {seat.n_idle_aircraft}</div>"
                 f"<div style='line-height:1.9;'>{chips}</div></td>"
             )
 
@@ -305,8 +309,10 @@ class MainWindow(QMainWindow):
                 )
                 values = [
                     seat.name, ac.tail, ac.ac_type, str(ac.n_flights),
+                    "是" if ac.n_flights == 0 else "",
                     str(a), str(b), str(ac.n_c_class), str(ac.n_b_class),
-                    airport_name(ov) if ov else "", legs,
+                    str(ac.n_changsha_dep), str(ac.n_briefing),
+                    airport_name(ov) if ov else "", legs if ac.n_flights else "空任务/停场/备用",
                 ]
                 r = self.table.rowCount()
                 self.table.insertRow(r)

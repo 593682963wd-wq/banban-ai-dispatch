@@ -2,7 +2,8 @@
 
 上传次日动态列表（每架飞机当日全部航班），AI 自动把所有飞机均衡分配到
 放行签派一 / 放行签派二两个席位，多目标兼顾：总任务量、时段忙闲、C/B 类
-机场、区域分布、过夜地、相近时刻冲突、交接班窗口。
+机场、C/B同目的地、长沙出港、讲解量、空任务飞机、区域分布、过夜地、
+相近时刻冲突、交接班窗口。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from core.allocator import allocate
 from core.excel_writer import build_excel_bytes
 from core.airports import airport_name
 
-APP_VERSION = "V 1.0.0"
+APP_VERSION = "V 1.1.0"
 AUTHOR = "王迪"
 TECH_SUPPORT = "AI 智能分配"
 
@@ -198,7 +199,7 @@ st.markdown(
     """
 <div class="upload-hero">
   <div class="hero-title">📥 第一步 · 上传次日动态列表（Excel）</div>
-  <div class="hero-sub">表格需包含：机号、机型、始发/到达机场（四字码）、起飞/到达时刻。系统会按机号汇总每架飞机当日全部航班，再做均衡分配。</div>
+  <div class="hero-sub">表格需包含：机号、机型、始发/到达机场（四字码）、起飞/到达时刻。系统会按固定 17 架机队补齐空任务飞机，再按机号整体均衡分配。</div>
 </div>
 """,
     unsafe_allow_html=True,
@@ -223,10 +224,13 @@ if not uploaded:
 2. **时段忙闲** — 上午 / 下午（按分时点切分）两席位都不过载
 3. **C 类机场** — 高高原/复杂机场航班均分（最受关注）
 4. **B 类机场** — 次复杂机场航班均分
-5. **区域分布** — 东北/华东/云南/西南… 各方向不集中在一个席位
-6. **过夜地** — 长沙/昆明/无锡等过夜目的地均衡
-7. **相近时刻冲突** — 同一时刻附近起飞的飞机尽量分到不同席位，避免一个人同时盯多架
-8. **交接班窗口** — 交接班时段两席位任务都不扎堆
+5. **C/B 同目的地** — 同一目的地机场（如丽江）尽量拆到两个席位
+6. **长沙出港 / 讲解量** — 长沙出港航班和需要重点讲解的航班量尽量接近
+7. **空任务飞机** — 固定 17 架机队中没有航班任务的飞机也均分到两个席位
+8. **区域分布** — 东北/华东/云南/西南… 各方向不集中在一个席位
+9. **过夜地** — 长沙/昆明/无锡等过夜目的地均衡
+10. **相近时刻冲突** — 同一时刻附近起飞的飞机尽量分到不同席位，避免一个人同时盯多架
+11. **交接班窗口** — 交接班时段两席位任务都不扎堆
 
 历史人工分配通常牺牲总数均衡（差 0~4）去换取 C/B 类与区域均衡；本系统在所有维度上同时优化，实测综合均衡度优于人工。
 """
@@ -252,22 +256,27 @@ except Exception as e:  # noqa: BLE001
     st.stop()
 
 active = [ac for ac in aircrafts if ac.n_flights > 0]
+idle = [ac for ac in aircrafts if ac.n_flights == 0]
 total_flights = sum(ac.n_flights for ac in active)
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.markdown(
-    f'<div class="metric-card"><div class="label">飞机总数</div><div class="value">{len(active)}</div></div>',
+    f'<div class="metric-card"><div class="label">机队总数</div><div class="value">{len(aircrafts)}</div></div>',
     unsafe_allow_html=True,
 )
 c2.markdown(
-    f'<div class="metric-card"><div class="label">航班总数</div><div class="value">{total_flights}</div></div>',
+    f'<div class="metric-card"><div class="label">任务飞机</div><div class="value">{len(active)}</div></div>',
     unsafe_allow_html=True,
 )
 c3.markdown(
-    f'<div class="metric-card"><div class="label">C 类航班</div><div class="value">{sum(ac.n_c_class for ac in active)}</div></div>',
+    f'<div class="metric-card"><div class="label">空任务</div><div class="value">{len(idle)}</div></div>',
     unsafe_allow_html=True,
 )
 c4.markdown(
+    f'<div class="metric-card"><div class="label">航班总数</div><div class="value">{total_flights}</div></div>',
+    unsafe_allow_html=True,
+)
+c5.markdown(
     f'<div class="metric-card"><div class="label">识别日期</div><div class="value" style="font-size:1.2rem;">{date.strftime("%m-%d") if date else "—"}</div></div>',
     unsafe_allow_html=True,
 )
@@ -317,6 +326,7 @@ if run or st.session_state.get("dispatch_done"):
     s1, s2 = result.seat1, result.seat2
     st.success(
         f"✅ 分配完成：{s1.name} {s1.n_flights} 班 / {s2.name} {s2.n_flights} 班 ·"
+        f" 空任务 {s1.n_idle_aircraft}/{s2.n_idle_aircraft} 架 ·"
         f" 综合均衡得分 {result.score:.0f}（越低越均衡）"
     )
 
@@ -335,6 +345,9 @@ if run or st.session_state.get("dispatch_done"):
     <div class="kv"><div class="k">时段B</div><div class="v">{seat.n_seg_b}</div></div>
     <div class="kv"><div class="k">C类</div><div class="v">{seat.n_c_class}</div></div>
     <div class="kv"><div class="k">B类</div><div class="v">{seat.n_b_class}</div></div>
+    <div class="kv"><div class="k">长沙出港</div><div class="v">{seat.n_changsha_dep}</div></div>
+    <div class="kv"><div class="k">讲解量</div><div class="v">{seat.n_briefing}</div></div>
+    <div class="kv"><div class="k">空任务</div><div class="v">{seat.n_idle_aircraft}</div></div>
   </div>
   <div class="tail-chips">{_chips(seat.tails)}</div>
 </div>
@@ -371,10 +384,12 @@ if run or st.session_state.get("dispatch_done"):
             )
             rows.append({
                 "席位": seat.name, "机号": ac.tail, "机型": ac.ac_type,
-                "航班数": ac.n_flights, "时段A": a, "时段B": b,
+                "航班数": ac.n_flights, "空任务": "是" if ac.n_flights == 0 else "",
+                "时段A": a, "时段B": b,
                 "C类": ac.n_c_class, "B类": ac.n_b_class,
+                "长沙出港": ac.n_changsha_dep, "讲解量": ac.n_briefing,
                 "过夜地": airport_name(ac.overnight_dest) if ac.overnight_dest else "",
-                "航段": legs,
+                "航段": legs if ac.n_flights else "空任务/停场/备用",
             })
     detail = pd.DataFrame(rows)
 
@@ -390,7 +405,7 @@ if run or st.session_state.get("dispatch_done"):
     )
 
     if result.idle_tails:
-        st.caption("📍 当日无航班（停场/备用）：" + "、".join(result.idle_tails))
+        st.caption("📍 当日无航班（停场/备用，已均分到席位）：" + "、".join(result.idle_tails))
 
     # 下载
     st.download_button(

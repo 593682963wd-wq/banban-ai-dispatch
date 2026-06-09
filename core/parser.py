@@ -11,6 +11,7 @@ from typing import Optional
 
 import pandas as pd
 
+from .fleet import KNOWN_FLEET_TAILS, fleet_sort_key
 from .models import Aircraft, Flight
 
 # 关注列 → 可能的表头别名（全部小写比较，去空格）
@@ -69,13 +70,22 @@ def _clean_icao(value: object) -> str:
     return str(value).strip().upper()
 
 
+def _clean_tail(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value).strip().upper()
+
+
 def build_aircrafts(
     df: pd.DataFrame,
     column_map: Optional[dict[str, str]] = None,
+    known_tails: Optional[tuple[str, ...]] = KNOWN_FLEET_TAILS,
 ) -> list[Aircraft]:
     """把 DataFrame 转成按机号聚合的 Aircraft 列表。
 
-    只保留有机号的行；无起飞时间的行仍保留（计入时段 A）。
+    只保留有机号的行；只有机号、没有航班信息的行记为空任务飞机。
+    known_tails 默认补齐当前 17 架固定机队，缺席于动态列表的机号也会作为
+    空任务飞机进入分配。
     """
     if column_map is None:
         column_map = resolve_columns(list(df.columns))
@@ -96,31 +106,46 @@ def build_aircrafts(
 
     by_tail: dict[str, Aircraft] = {}
     for idx, row in df.iterrows():
-        tail = str(row[c_tail]).strip() if pd.notna(row[c_tail]) else ""
+        tail = _clean_tail(row[c_tail])
         if not tail or tail.lower() in ("nan", "none"):
             continue
         ac_type = str(row[c_type]).strip() if c_type and pd.notna(row[c_type]) else ""
-        flight = Flight(
-            tail=tail,
-            ac_type=ac_type,
-            dep_icao=_clean_icao(row[c_dep]),
-            arr_icao=_clean_icao(row[c_arr]),
-            dep_time=_parse_time(row[c_dept]) if c_dept else None,
-            arr_time=_parse_time(row[c_arrt]) if c_arrt else None,
-            row_index=int(idx) if isinstance(idx, (int,)) else -1,
-        )
         if tail not in by_tail:
             by_tail[tail] = Aircraft(tail=tail, ac_type=ac_type)
         ac = by_tail[tail]
         if not ac.ac_type and ac_type:
             ac.ac_type = ac_type
+
+        dep_icao = _clean_icao(row[c_dep])
+        arr_icao = _clean_icao(row[c_arr])
+        dep_time = _parse_time(row[c_dept]) if c_dept else None
+        arr_time = _parse_time(row[c_arrt]) if c_arrt else None
+
+        if not any((dep_icao, arr_icao, dep_time, arr_time)):
+            continue
+
+        flight = Flight(
+            tail=tail,
+            ac_type=ac_type,
+            dep_icao=dep_icao,
+            arr_icao=arr_icao,
+            dep_time=dep_time,
+            arr_time=arr_time,
+            row_index=int(idx) if isinstance(idx, (int,)) else -1,
+        )
         ac.flights.append(flight)
+
+    if known_tails:
+        for tail in known_tails:
+            clean_tail = _clean_tail(tail)
+            if clean_tail and clean_tail not in by_tail:
+                by_tail[clean_tail] = Aircraft(tail=clean_tail, ac_type="")
 
     aircrafts = list(by_tail.values())
     for ac in aircrafts:
         ac.sort_flights()
     # 稳定排序：机型大类 → 机号，方便界面展示与去对称
-    aircrafts.sort(key=lambda a: (a.type_group, a.tail))
+    aircrafts.sort(key=lambda a: (a.n_flights == 0, a.type_group, fleet_sort_key(a.tail)))
     return aircrafts
 
 

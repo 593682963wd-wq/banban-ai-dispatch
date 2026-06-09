@@ -46,8 +46,8 @@ def build_workbook(result: AllocationResult) -> Workbook:
     # ── Sheet 1：分配明细 ──
     ws = wb.active
     ws.title = "分配明细"
-    headers = ["所属席位", "机号", "机型", "航班数", "时段A", "时段B",
-               "C类", "B类", "过夜地", "航段明细"]
+    headers = ["所属席位", "机号", "机型", "航班数", "空任务", "时段A", "时段B",
+               "C类", "B类", "长沙出港", "讲解量", "过夜地", "航段明细"]
     ws.append(headers)
     _style_header(ws, 1, len(headers))
 
@@ -65,10 +65,11 @@ def build_workbook(result: AllocationResult) -> Workbook:
             a, b = ac.n_segment(result.config.split_minutes)
             ov = ac.overnight_dest
             ws.append([
-                seat.name, ac.tail, ac.ac_type, ac.n_flights, a, b,
-                ac.n_c_class, ac.n_b_class,
+                seat.name, ac.tail, ac.ac_type, ac.n_flights,
+                "是" if ac.n_flights == 0 else "", a, b,
+                ac.n_c_class, ac.n_b_class, ac.n_changsha_dep, ac.n_briefing,
                 airport_name(ov) if ov else "",
-                _legs_text(ac),
+                _legs_text(ac) if ac.n_flights else "空任务/停场/备用",
             ])
             for c in range(1, len(headers) + 1):
                 cell = ws.cell(row=ws.max_row, column=c)
@@ -79,7 +80,7 @@ def build_workbook(result: AllocationResult) -> Workbook:
                     vertical="center",
                 )
 
-    _autosize(ws, [11, 9, 16, 7, 7, 7, 6, 6, 9, 70])
+    _autosize(ws, [11, 9, 16, 7, 8, 7, 7, 6, 6, 10, 8, 9, 70])
     ws.freeze_panes = "A2"
 
     # ── Sheet 2：席位汇总 ──
@@ -88,11 +89,14 @@ def build_workbook(result: AllocationResult) -> Workbook:
     _style_header(ws2, 1, 4)
     rows = [
         ("飞机数", len(result.seat1.tails), len(result.seat2.tails)),
+        ("空任务飞机", result.seat1.n_idle_aircraft, result.seat2.n_idle_aircraft),
         ("航班任务数", result.seat1.n_flights, result.seat2.n_flights),
         ("时段A航班", result.seat1.n_seg_a, result.seat2.n_seg_a),
         ("时段B航班", result.seat1.n_seg_b, result.seat2.n_seg_b),
         ("C类机场航班", result.seat1.n_c_class, result.seat2.n_c_class),
         ("B类机场航班", result.seat1.n_b_class, result.seat2.n_b_class),
+        ("长沙出港航班", result.seat1.n_changsha_dep, result.seat2.n_changsha_dep),
+        ("讲解量", result.seat1.n_briefing, result.seat2.n_briefing),
     ]
     for name, v1, v2 in rows:
         ws2.append([name, v1, v2, abs(v1 - v2)])

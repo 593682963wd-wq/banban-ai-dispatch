@@ -3,8 +3,8 @@
 把当天「有航班的飞机」分到 2 个放行席位，最小化多目标加权不均衡分数。
 目标覆盖 7 条业务规则：
   1 总量 + 时段A/B 均衡    2 C类机场均分        3 B类机场均分
-  4 长沙首班均衡           5 过夜目的地均分      6 同机场/同区域均分
-  7 相近起飞时刻分散 + 交接班敏感窗口均衡
+  4 长沙出港 + 讲解量均衡  5 过夜目的地均分      6 同机场/同区域均分
+  7 C/B同目的地拆分 + 相近起飞时刻分散 + 交接班敏感窗口均衡
 
 飞机数 N 一般 13~16，采用「全枚举 + 去对称」精确求最优；N 超过阈值时退化为
 随机重启局部搜索，保证可用性。
@@ -15,6 +15,7 @@ import random
 from typing import Optional
 
 from .airports import OVERNIGHT_DESTS
+from .fleet import fleet_sort_key
 from .models import Aircraft, AllocationConfig, AllocationResult, SeatPlan
 
 # 超过该飞机数改用局部搜索（2^(N-1) 过大时）
@@ -26,14 +27,20 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
     feats = []
     region_keys: set[str] = set()
     dest_keys: set[str] = set()
+    c_dest_keys: set[str] = set()
+    b_dest_keys: set[str] = set()
     n_windows = len(config.handover_windows)
 
     for ac in aircrafts:
         seg_a, seg_b = ac.n_segment(config.split_minutes)
         rc = ac.region_counts()
         dc = ac.dest_counts()
+        cdc = ac.c_class_dest_counts()
+        bdc = ac.b_class_dest_counts()
         region_keys |= set(rc.keys())
         dest_keys |= set(dc.keys())
+        c_dest_keys |= set(cdc.keys())
+        b_dest_keys |= set(bdc.keys())
         hw = [0] * n_windows
         for f in ac.flights:
             m = f.dep_minutes
@@ -48,10 +55,13 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
             "b": seg_b,
             "c": ac.n_c_class,
             "bc": ac.n_b_class,
-            "cs": 1 if ac.first_changsha_dep is not None else 0,
+            "cs": ac.n_changsha_dep,
+            "brief": ac.n_briefing,
             "ov": ac.overnight_key,
             "rc": rc,
             "dc": dc,
+            "cdc": cdc,
+            "bdc": bdc,
             "hw": hw,
         })
 
@@ -72,15 +82,31 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
             if ix != iy:
                 conflict.append((ix, iy))
 
-    return feats, sorted(region_keys), sorted(dest_keys), conflict
+    return (
+        feats,
+        sorted(region_keys),
+        sorted(dest_keys),
+        sorted(c_dest_keys),
+        sorted(b_dest_keys),
+        conflict,
+    )
 
 
-def _score_assignment(feats, region_keys, dest_keys, conflict, assignment, config):
+def _score_assignment(
+    feats,
+    region_keys,
+    dest_keys,
+    c_dest_keys,
+    b_dest_keys,
+    conflict,
+    assignment,
+    config,
+):
     """对一个 0/1 分配计算 (score, metrics, group_totals)。"""
     n_windows = len(config.handover_windows)
     g = [
-        {"n": 0, "a": 0, "b": 0, "c": 0, "bc": 0, "cs": 0,
-         "ov": {}, "rc": {}, "dc": {}, "hw": [0] * n_windows}
+        {"n": 0, "a": 0, "b": 0, "c": 0, "bc": 0, "cs": 0, "brief": 0,
+         "ov": {}, "rc": {}, "dc": {}, "cdc": {}, "bdc": {}, "hw": [0] * n_windows}
         for _ in range(2)
     ]
     for i, asg in enumerate(assignment):
@@ -92,12 +118,17 @@ def _score_assignment(feats, region_keys, dest_keys, conflict, assignment, confi
         grp["c"] += f["c"]
         grp["bc"] += f["bc"]
         grp["cs"] += f["cs"]
+        grp["brief"] += f["brief"]
         if f["ov"]:
             grp["ov"][f["ov"]] = grp["ov"].get(f["ov"], 0) + 1
         for k, v in f["rc"].items():
             grp["rc"][k] = grp["rc"].get(k, 0) + v
         for k, v in f["dc"].items():
             grp["dc"][k] = grp["dc"].get(k, 0) + v
+        for k, v in f["cdc"].items():
+            grp["cdc"][k] = grp["cdc"].get(k, 0) + v
+        for k, v in f["bdc"].items():
+            grp["bdc"][k] = grp["bdc"].get(k, 0) + v
         for w in range(n_windows):
             grp["hw"][w] += f["hw"][w]
 
@@ -107,9 +138,12 @@ def _score_assignment(feats, region_keys, dest_keys, conflict, assignment, confi
     d_c = abs(g[0]["c"] - g[1]["c"])
     d_bc = abs(g[0]["bc"] - g[1]["bc"])
     d_cs = abs(g[0]["cs"] - g[1]["cs"])
+    d_brief = abs(g[0]["brief"] - g[1]["brief"])
     d_ov = sum(abs(g[0]["ov"].get(k, 0) - g[1]["ov"].get(k, 0)) for k in OVERNIGHT_DESTS)
     d_region = sum(abs(g[0]["rc"].get(k, 0) - g[1]["rc"].get(k, 0)) for k in region_keys)
     d_dest = sum(abs(g[0]["dc"].get(k, 0) - g[1]["dc"].get(k, 0)) for k in dest_keys)
+    d_c_dest = sum(abs(g[0]["cdc"].get(k, 0) - g[1]["cdc"].get(k, 0)) for k in c_dest_keys)
+    d_b_dest = sum(abs(g[0]["bdc"].get(k, 0) - g[1]["bdc"].get(k, 0)) for k in b_dest_keys)
     d_hw = sum(abs(g[0]["hw"][w] - g[1]["hw"][w]) for w in range(n_windows))
 
     gap = 0
@@ -123,9 +157,12 @@ def _score_assignment(feats, region_keys, dest_keys, conflict, assignment, confi
         + config.w_c_class * d_c
         + config.w_b_class * d_bc
         + config.w_changsha * d_cs
+        + config.w_briefing * d_brief
         + config.w_overnight * d_ov
         + config.w_region * d_region
         + config.w_dest * d_dest
+        + config.w_c_dest * d_c_dest
+        + config.w_b_dest * d_b_dest
         + config.w_gap * gap
         + config.w_handover * d_hw
     )
@@ -136,7 +173,10 @@ def _score_assignment(feats, region_keys, dest_keys, conflict, assignment, confi
         "时段B差": d_seg_b,
         "C类机场差": d_c,
         "B类机场差": d_bc,
-        "长沙首班差": d_cs,
+        "C类同目的地差": d_c_dest,
+        "B类同目的地差": d_b_dest,
+        "长沙出港差": d_cs,
+        "讲解量差": d_brief,
         "过夜目的地差": d_ov,
         "区域差合计": d_region,
         "同机场差合计": d_dest,
@@ -156,7 +196,18 @@ def _iter_enumerate(n: int):
         yield assignment
 
 
-def _local_search(feats, region_keys, dest_keys, conflict, n, config, restarts=40, iters=4000):
+def _local_search(
+    feats,
+    region_keys,
+    dest_keys,
+    c_dest_keys,
+    b_dest_keys,
+    conflict,
+    n,
+    config,
+    restarts=40,
+    iters=4000,
+):
     """随机重启局部搜索（N 很大时的兜底）。"""
     best_assignment = None
     best_key = None
@@ -164,7 +215,9 @@ def _local_search(feats, region_keys, dest_keys, conflict, n, config, restarts=4
     for _ in range(restarts):
         assignment = [rng.randint(0, 1) for _ in range(n)]
         assignment[0] = 0
-        score, metrics, g = _score_assignment(feats, region_keys, dest_keys, conflict, assignment, config)
+        score, metrics, g = _score_assignment(
+            feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
+        )
         cur_key = (score, abs(g[0]["n"] - g[1]["n"]))
         improved = True
         steps = 0
@@ -172,7 +225,9 @@ def _local_search(feats, region_keys, dest_keys, conflict, n, config, restarts=4
             improved = False
             for i in range(1, n):
                 assignment[i] ^= 1
-                s2, m2, g2 = _score_assignment(feats, region_keys, dest_keys, conflict, assignment, config)
+                s2, m2, g2 = _score_assignment(
+                    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
+                )
                 k2 = (s2, abs(g2[0]["n"] - g2[1]["n"]))
                 if k2 < cur_key:
                     cur_key = k2
@@ -184,6 +239,31 @@ def _local_search(feats, region_keys, dest_keys, conflict, n, config, restarts=4
             best_key = cur_key
             best_assignment = assignment[:]
     return best_assignment
+
+
+def _add_aircraft_to_plan(ac: Aircraft, plan: SeatPlan, config: AllocationConfig) -> None:
+    plan.tails.append(ac.tail)
+    plan.n_flights += ac.n_flights
+    a, b = ac.n_segment(config.split_minutes)
+    plan.n_seg_a += a
+    plan.n_seg_b += b
+    plan.n_c_class += ac.n_c_class
+    plan.n_b_class += ac.n_b_class
+    plan.n_changsha_dep += ac.n_changsha_dep
+    plan.n_briefing += ac.n_briefing
+    if ac.n_flights == 0:
+        plan.n_idle_aircraft += 1
+
+
+def _assign_idle_aircraft(idle: list[Aircraft], seat1: SeatPlan, seat2: SeatPlan, config: AllocationConfig) -> None:
+    """Distribute empty-task aircraft evenly while keeping output deterministic."""
+    if not idle:
+        return
+    idle_sorted = sorted(idle, key=lambda ac: fleet_sort_key(ac.tail))
+    start = 0 if len(seat1.tails) <= len(seat2.tails) else 1
+    for idx, ac in enumerate(idle_sorted):
+        side = (start + idx) % 2
+        _add_aircraft_to_plan(ac, seat1 if side == 0 else seat2, config)
 
 
 def allocate(aircrafts: list[Aircraft], config: Optional[AllocationConfig] = None) -> AllocationResult:
@@ -199,19 +279,21 @@ def allocate(aircrafts: list[Aircraft], config: Optional[AllocationConfig] = Non
     seat2 = SeatPlan(name="放行席位2")
 
     if n == 0:
+        _assign_idle_aircraft(idle, seat1, seat2, config)
         return AllocationResult(
             seat1=seat1, seat2=seat2, aircrafts=aircrafts, config=config,
-            metrics={}, score=0.0,
+            metrics={"空任务飞机差": abs(seat1.n_idle_aircraft - seat2.n_idle_aircraft)}, score=0.0,
+            idle_tails=[ac.tail for ac in idle],
         )
 
-    feats, region_keys, dest_keys, conflict = _aircraft_features(active, config)
+    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict = _aircraft_features(active, config)
 
     best_assignment = None
     best_key = None
     if n <= ENUM_LIMIT:
         for assignment in _iter_enumerate(n):
             score, metrics, g = _score_assignment(
-                feats, region_keys, dest_keys, conflict, assignment, config
+                feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
             )
             # tie-break：分数 → 总数差 → 飞机数差（更稳定均衡）
             key = (score, abs(g[0]["n"] - g[1]["n"]), abs(
@@ -221,30 +303,27 @@ def allocate(aircrafts: list[Aircraft], config: Optional[AllocationConfig] = Non
                 best_key = key
                 best_assignment = assignment[:]
     else:
-        best_assignment = _local_search(feats, region_keys, dest_keys, conflict, n, config)
+        best_assignment = _local_search(
+            feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, n, config
+        )
 
     score, metrics, g = _score_assignment(
-        feats, region_keys, dest_keys, conflict, best_assignment, config
+        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, best_assignment, config
     )
 
     # 规约：席位1 取航班数较多的一组（与历史习惯无强绑定，仅保证稳定可读）
     swap = g[1]["n"] > g[0]["n"]
     for ac, asg in zip(active, best_assignment):
         side = asg ^ (1 if swap else 0)
-        plan = seat1 if side == 0 else seat2
-        plan.tails.append(ac.tail)
-        plan.n_flights += ac.n_flights
-        a, b = ac.n_segment(config.split_minutes)
-        plan.n_seg_a += a
-        plan.n_seg_b += b
-        plan.n_c_class += ac.n_c_class
-        plan.n_b_class += ac.n_b_class
+        _add_aircraft_to_plan(ac, seat1 if side == 0 else seat2, config)
+
+    _assign_idle_aircraft(idle, seat1, seat2, config)
+    metrics["空任务飞机差"] = abs(seat1.n_idle_aircraft - seat2.n_idle_aircraft)
 
     result = AllocationResult(
         seat1=seat1, seat2=seat2, aircrafts=aircrafts, config=config,
-        score=score, metrics=metrics,
+        score=score, metrics=metrics, idle_tails=[ac.tail for ac in idle],
     )
-    result.idle_tails = [ac.tail for ac in idle]
     return result
 
 
@@ -261,8 +340,8 @@ def evaluate_split(aircrafts: list[Aircraft], assignment: list[int],
         raise ValueError(
             f"assignment 长度 {len(assignment)} 与有航班飞机数 {len(active)} 不一致"
         )
-    feats, region_keys, dest_keys, conflict = _aircraft_features(active, config)
+    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict = _aircraft_features(active, config)
     score, metrics, _ = _score_assignment(
-        feats, region_keys, dest_keys, conflict, assignment, config
+        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
     )
     return score, metrics

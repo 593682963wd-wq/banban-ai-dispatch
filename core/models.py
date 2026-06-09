@@ -85,6 +85,23 @@ class Aircraft:
     def n_b_class(self) -> int:
         return sum(1 for f in self.flights if f.is_b_class)
 
+    @property
+    def n_changsha_dep(self) -> int:
+        """长沙出港航班数。用于均衡基地出港监控与讲解工作量。"""
+        return sum(1 for f in self.flights if f.dep_icao == airports.HOME_BASE)
+
+    @property
+    def n_briefing(self) -> int:
+        """需要重点讲解/关注的航班量。
+
+        当前口径：长沙出港、C 类目的地、B 类目的地任一命中即计 1 次。
+        """
+        return sum(
+            1
+            for f in self.flights
+            if f.dep_icao == airports.HOME_BASE or f.is_c_class or f.is_b_class
+        )
+
     def n_segment(self, split_minutes: int) -> tuple[int, int]:
         """返回 (时段A航班数, 时段B航班数)。
         时段A = 起飞时刻 <= split_minutes；时段B = > split_minutes。
@@ -138,6 +155,20 @@ class Aircraft:
             out[f.arr_icao] = out.get(f.arr_icao, 0) + 1
         return out
 
+    def c_class_dest_counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for f in self.flights:
+            if f.is_c_class:
+                out[f.arr_icao] = out.get(f.arr_icao, 0) + 1
+        return out
+
+    def b_class_dest_counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for f in self.flights:
+            if f.is_b_class:
+                out[f.arr_icao] = out.get(f.arr_icao, 0) + 1
+        return out
+
 
 @dataclass
 class AllocationConfig:
@@ -160,10 +191,13 @@ class AllocationConfig:
     w_segment: float = 8.0      # 时段A/B 各自的差
     w_c_class: float = 6.0      # C 类机场（规则 2）
     w_b_class: float = 4.0      # B 类机场（规则 3，低于 C 类）
-    w_changsha: float = 3.0     # 长沙首班（规则 4）
+    w_changsha: float = 5.0     # 长沙出港航班
+    w_briefing: float = 5.0     # 讲解量
     w_overnight: float = 3.0    # 过夜目的地（规则 5）
     w_region: float = 2.0       # 同区域（规则 6）
     w_dest: float = 2.0         # 同机场（规则 6）
+    w_c_dest: float = 8.0       # C 类同目的地机场
+    w_b_dest: float = 5.0       # B 类同目的地机场
     w_gap: float = 1.0          # 相近时刻冲突（规则 7）
     w_handover: float = 3.0     # 交接班敏感窗口（规则 7）
 
@@ -189,6 +223,9 @@ class SeatPlan:
     n_seg_b: int = 0
     n_c_class: int = 0
     n_b_class: int = 0
+    n_changsha_dep: int = 0
+    n_briefing: int = 0
+    n_idle_aircraft: int = 0
 
 
 @dataclass
