@@ -31,7 +31,7 @@ from core.excel_writer import write_allocation_excel
 from core.models import AllocationConfig
 from core.parser import build_aircrafts, infer_date, load_dynamic_list, resolve_columns
 
-APP_VERSION = "V 1.1.0"
+APP_VERSION = "V 1.1.1"
 AUTHOR = "王迪"
 
 SEAT1_COLOR = "#E7E9EC"  # 浅灰 → 放行签派一

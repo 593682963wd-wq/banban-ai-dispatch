@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from core.allocator import allocate
+from core.allocator import allocate, evaluate_split
 from core.models import AllocationConfig
 from core.parser import build_aircrafts, resolve_columns
 
@@ -96,6 +96,55 @@ class AllocationRuleTests(unittest.TestCase):
         self.assertIn("长沙出港差", result.metrics)
         self.assertIn("讲解量差", result.metrics)
         self.assertLessEqual(abs(result.seat1.n_briefing - result.seat2.n_briefing), 1)
+
+    def test_same_overnight_destination_close_landings_are_split(self) -> None:
+        df = pd.DataFrame(
+            [
+                {
+                    "机号": "T01",
+                    "机型": "A320",
+                    "始发": "ZPPP",
+                    "到达": "ZGHA",
+                    "局飞": datetime(2026, 6, 9, 18, 0),
+                    "局达": datetime(2026, 6, 9, 20, 0),
+                },
+                {
+                    "机号": "T02",
+                    "机型": "A320",
+                    "始发": "ZPPP",
+                    "到达": "ZGHA",
+                    "局飞": datetime(2026, 6, 9, 18, 40),
+                    "局达": datetime(2026, 6, 9, 20, 40),
+                },
+                {
+                    "机号": "T03",
+                    "机型": "A320",
+                    "始发": "ZPPP",
+                    "到达": "ZGHA",
+                    "局飞": datetime(2026, 6, 9, 21, 10),
+                    "局达": datetime(2026, 6, 9, 23, 10),
+                },
+                {
+                    "机号": "T04",
+                    "机型": "A320",
+                    "始发": "ZPPP",
+                    "到达": "ZGHA",
+                    "局飞": datetime(2026, 6, 9, 21, 50),
+                    "局达": datetime(2026, 6, 9, 23, 50),
+                },
+            ]
+        )
+        aircrafts = build_aircrafts(df, resolve_columns(list(df.columns)), known_tails=())
+
+        clustered_score, clustered_metrics = evaluate_split(aircrafts, [0, 0, 1, 1], AllocationConfig())
+        split_score, split_metrics = evaluate_split(aircrafts, [0, 1, 0, 1], AllocationConfig())
+
+        self.assertEqual(clustered_metrics["过夜落地窗口冲突"], 2)
+        self.assertEqual(split_metrics["过夜落地窗口冲突"], 0)
+        self.assertLess(split_score, clustered_score)
+
+        result = allocate(aircrafts, AllocationConfig())
+        self.assertEqual(result.metrics["过夜落地窗口冲突"], 0)
 
 
 if __name__ == "__main__":

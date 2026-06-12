@@ -4,7 +4,7 @@
 目标覆盖 7 条业务规则：
   1 总量 + 时段A/B 均衡    2 C类机场均分        3 B类机场均分
   4 长沙出港 + 讲解量均衡  5 过夜目的地均分      6 同机场/同区域均分
-  7 C/B同目的地拆分 + 相近起飞时刻分散 + 交接班敏感窗口均衡
+  7 C/B同目的地拆分 + 过夜落地窗口拆分 + 相近起飞时刻分散 + 交接班敏感窗口均衡
 
 飞机数 N 一般 13~16，采用「全枚举 + 去对称」精确求最优；N 超过阈值时退化为
 随机重启局部搜索，保证可用性。
@@ -58,6 +58,7 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
             "cs": ac.n_changsha_dep,
             "brief": ac.n_briefing,
             "ov": ac.overnight_key,
+            "ov_arr": ac.final_arrival_time,
             "rc": rc,
             "dc": dc,
             "cdc": cdc,
@@ -82,6 +83,20 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
             if ix != iy:
                 conflict.append((ix, iy))
 
+    # 同一过夜地的最后落地时刻若在前后 2 小时窗口内，尽量拆到两个席位。
+    overnight_landing_conflict: list[tuple[int, int]] = []
+    for i in range(len(aircrafts)):
+        ov_i = feats[i]["ov"]
+        arr_i = feats[i]["ov_arr"]
+        if not ov_i or arr_i is None:
+            continue
+        for j in range(i + 1, len(aircrafts)):
+            if feats[j]["ov"] != ov_i or feats[j]["ov_arr"] is None:
+                continue
+            delta_min = abs((feats[j]["ov_arr"] - arr_i).total_seconds()) / 60
+            if delta_min <= config.overnight_arrival_window_min:
+                overnight_landing_conflict.append((i, j))
+
     return (
         feats,
         sorted(region_keys),
@@ -89,6 +104,7 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
         sorted(c_dest_keys),
         sorted(b_dest_keys),
         conflict,
+        overnight_landing_conflict,
     )
 
 
@@ -99,6 +115,7 @@ def _score_assignment(
     c_dest_keys,
     b_dest_keys,
     conflict,
+    overnight_landing_conflict,
     assignment,
     config,
 ):
@@ -151,6 +168,11 @@ def _score_assignment(
         if assignment[i] == assignment[j]:
             gap += 1
 
+    overnight_gap = 0
+    for (i, j) in overnight_landing_conflict:
+        if assignment[i] == assignment[j]:
+            overnight_gap += 1
+
     score = (
         config.w_total * d_total
         + config.w_segment * (d_seg_a + d_seg_b)
@@ -163,6 +185,7 @@ def _score_assignment(
         + config.w_dest * d_dest
         + config.w_c_dest * d_c_dest
         + config.w_b_dest * d_b_dest
+        + config.w_overnight_landing_window * overnight_gap
         + config.w_gap * gap
         + config.w_handover * d_hw
     )
@@ -178,6 +201,7 @@ def _score_assignment(
         "长沙出港差": d_cs,
         "讲解量差": d_brief,
         "过夜目的地差": d_ov,
+        "过夜落地窗口冲突": overnight_gap,
         "区域差合计": d_region,
         "同机场差合计": d_dest,
         "相近时刻冲突": gap,
@@ -203,6 +227,7 @@ def _local_search(
     c_dest_keys,
     b_dest_keys,
     conflict,
+    overnight_landing_conflict,
     n,
     config,
     restarts=40,
@@ -216,7 +241,8 @@ def _local_search(
         assignment = [rng.randint(0, 1) for _ in range(n)]
         assignment[0] = 0
         score, metrics, g = _score_assignment(
-            feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
+            feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+            conflict, overnight_landing_conflict, assignment, config
         )
         cur_key = (score, abs(g[0]["n"] - g[1]["n"]))
         improved = True
@@ -226,7 +252,8 @@ def _local_search(
             for i in range(1, n):
                 assignment[i] ^= 1
                 s2, m2, g2 = _score_assignment(
-                    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
+                    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+                    conflict, overnight_landing_conflict, assignment, config
                 )
                 k2 = (s2, abs(g2[0]["n"] - g2[1]["n"]))
                 if k2 < cur_key:
@@ -286,14 +313,18 @@ def allocate(aircrafts: list[Aircraft], config: Optional[AllocationConfig] = Non
             idle_tails=[ac.tail for ac in idle],
         )
 
-    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict = _aircraft_features(active, config)
+    (
+        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+        conflict, overnight_landing_conflict,
+    ) = _aircraft_features(active, config)
 
     best_assignment = None
     best_key = None
     if n <= ENUM_LIMIT:
         for assignment in _iter_enumerate(n):
             score, metrics, g = _score_assignment(
-                feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
+                feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+                conflict, overnight_landing_conflict, assignment, config
             )
             # tie-break：分数 → 总数差 → 飞机数差（更稳定均衡）
             key = (score, abs(g[0]["n"] - g[1]["n"]), abs(
@@ -304,11 +335,13 @@ def allocate(aircrafts: list[Aircraft], config: Optional[AllocationConfig] = Non
                 best_assignment = assignment[:]
     else:
         best_assignment = _local_search(
-            feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, n, config
+            feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+            conflict, overnight_landing_conflict, n, config
         )
 
     score, metrics, g = _score_assignment(
-        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, best_assignment, config
+        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+        conflict, overnight_landing_conflict, best_assignment, config
     )
 
     # 规约：席位1 取航班数较多的一组（与历史习惯无强绑定，仅保证稳定可读）
@@ -340,8 +373,12 @@ def evaluate_split(aircrafts: list[Aircraft], assignment: list[int],
         raise ValueError(
             f"assignment 长度 {len(assignment)} 与有航班飞机数 {len(active)} 不一致"
         )
-    feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict = _aircraft_features(active, config)
+    (
+        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+        conflict, overnight_landing_conflict,
+    ) = _aircraft_features(active, config)
     score, metrics, _ = _score_assignment(
-        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys, conflict, assignment, config
+        feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
+        conflict, overnight_landing_conflict, assignment, config
     )
     return score, metrics

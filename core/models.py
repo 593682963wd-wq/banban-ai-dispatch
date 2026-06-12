@@ -31,6 +31,13 @@ class Flight:
         return self.dep_time.hour * 60 + self.dep_time.minute
 
     @property
+    def arr_minutes(self) -> Optional[int]:
+        """落地时刻（当日 0 点起的分钟数）。无时间返回 None。"""
+        if self.arr_time is None:
+            return None
+        return self.arr_time.hour * 60 + self.arr_time.minute
+
+    @property
     def dep_hhmm(self) -> str:
         return self.dep_time.strftime("%H:%M") if self.dep_time else "--:--"
 
@@ -128,14 +135,33 @@ class Aircraft:
 
     @property
     def overnight_dest(self) -> Optional[str]:
-        """当天最后一班的到达 ICAO（过夜地）。规则 5。"""
+        """当天最后一班落地的到达 ICAO（过夜地）。规则 5。"""
+        last = self.final_flight
+        return last.arr_icao if last else None
+
+    @property
+    def final_flight(self) -> Optional[Flight]:
+        """当天最后落地航班；缺落地时刻时用起飞时刻兜底排序。"""
         if not self.flights:
             return None
-        last = max(
+        return max(
             self.flights,
-            key=lambda f: (f.dep_minutes is not None, f.dep_minutes or -1),
+            key=lambda f: (
+                f.arr_time is not None or f.dep_time is not None,
+                f.arr_time or f.dep_time or datetime.min,
+                f.dep_time or datetime.min,
+            ),
         )
-        return last.arr_icao
+
+    @property
+    def final_arrival_time(self) -> Optional[datetime]:
+        last = self.final_flight
+        return last.arr_time if last else None
+
+    @property
+    def final_arrival_minutes(self) -> Optional[int]:
+        last = self.final_flight
+        return last.arr_minutes if last else None
 
     @property
     def overnight_key(self) -> Optional[str]:
@@ -186,6 +212,9 @@ class AllocationConfig:
     # 相近起飞时刻阈值（分钟）。同席位内间隔小于该值视为冲突。规则 7。
     gap_threshold_min: int = 5
 
+    # 同一过夜地最后落地时刻窗口（分钟）。窗口内尽量拆到两个席位。
+    overnight_arrival_window_min: int = 120
+
     # ── 各目标权重（最小化两席位指标差）──
     w_total: float = 10.0       # 总航班数差
     w_segment: float = 8.0      # 时段A/B 各自的差
@@ -194,6 +223,7 @@ class AllocationConfig:
     w_changsha: float = 5.0     # 长沙出港航班
     w_briefing: float = 5.0     # 讲解量
     w_overnight: float = 3.0    # 过夜目的地（规则 5）
+    w_overnight_landing_window: float = 8.0  # 同过夜地末班落地 2 小时窗口拆分
     w_region: float = 2.0       # 同区域（规则 6）
     w_dest: float = 2.0         # 同机场（规则 6）
     w_c_dest: float = 8.0       # C 类同目的地机场
