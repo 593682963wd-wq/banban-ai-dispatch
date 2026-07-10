@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Optional
 
 from . import airports
@@ -25,10 +25,22 @@ class Flight:
 
     @property
     def dep_minutes(self) -> Optional[int]:
-        """起飞时刻（当日 0 点起的分钟数）。无时间返回 None。"""
+        """起飞钟点（本地日 0 点起的分钟数）。无时间返回 None。"""
         if self.dep_time is None:
             return None
         return self.dep_time.hour * 60 + self.dep_time.minute
+
+    def dep_operational_minutes(self, service_date: Optional[date] = None) -> Optional[int]:
+        """相对业务日期 00:00 的起飞分钟数。
+
+        有业务日期时，次日 00:30 会计为 1470 分钟；否则退回到钟点分钟。
+        """
+        if self.dep_time is None:
+            return None
+        if service_date is None:
+            return self.dep_minutes
+        base = datetime.combine(service_date, time.min)
+        return int((self.dep_time - base).total_seconds() // 60)
 
     @property
     def arr_minutes(self) -> Optional[int]:
@@ -109,15 +121,25 @@ class Aircraft:
             if f.dep_icao == airports.HOME_BASE or f.is_c_class or f.is_b_class
         )
 
-    def n_segment(self, split_minutes: int) -> tuple[int, int]:
+    def n_segment(
+        self,
+        split_minutes: int,
+        start_minutes: int = 480,
+        end_minutes: int = 1440,
+        service_date: Optional[date] = None,
+    ) -> tuple[int, int]:
         """返回 (时段A航班数, 时段B航班数)。
-        时段A = 起飞时刻 <= split_minutes；时段B = > split_minutes。
-        无起飞时间的航班计入时段A（多为早班）。
+
+        时段A = 08:00(不含) 到 split_minutes(含)。
+        时段B = split_minutes(不含) 到 24:00(含)。
+        08:00 以前、24:00 以后或无起飞时间的航班不参与 A/B 拆分。
         """
         a = b = 0
         for f in self.flights:
-            m = f.dep_minutes
-            if m is None or m <= split_minutes:
+            m = f.dep_operational_minutes(service_date)
+            if m is None or m <= start_minutes or m > end_minutes:
+                continue
+            if m <= split_minutes:
                 a += 1
             else:
                 b += 1
@@ -202,6 +224,9 @@ class AllocationConfig:
 
     # 时段分界（分钟，自 0 点）。6/1 起默认 13:30=810；6/1 前 16:30=990。
     split_minutes: int = 810
+    segment_start_minutes: int = 480
+    segment_end_minutes: int = 1440
+    service_date: Optional[date] = None
 
     # 交接班后敏感窗口（分钟区间，左开右闭近似）。规则 7。
     handover_windows: tuple[tuple[int, int], ...] = (
@@ -217,7 +242,7 @@ class AllocationConfig:
 
     # ── 各目标权重（最小化两席位指标差）──
     w_total: float = 10.0       # 总航班数差
-    w_segment: float = 8.0      # 时段A/B 各自的差
+    w_segment: float = 20.0     # 时段A/B 各自的差（首位均衡目标）
     w_c_class: float = 6.0      # C 类机场（规则 2）
     w_b_class: float = 4.0      # B 类机场（规则 3，低于 C 类）
     w_changsha: float = 5.0     # 长沙出港航班
@@ -239,6 +264,7 @@ class AllocationConfig:
             cfg.split_minutes = 990  # 16:30
         else:
             cfg.split_minutes = 810  # 13:30
+        cfg.service_date = dt.date() if dt is not None else None
         return cfg
 
 

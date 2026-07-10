@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 import warnings
 from datetime import datetime
 from typing import Optional
@@ -73,7 +74,11 @@ def _clean_icao(value: object) -> str:
 def _clean_tail(value: object) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
-    return str(value).strip().upper()
+    # 动态表常以注册号格式导出（如 ``B-30AM``），固定机队清单则使用
+    # 短机号（``30AM``）。统一成短机号，避免同一架飞机被建立成两个对象。
+    tail = re.sub(r"\s+", "", str(value).strip().upper())
+    tail = re.sub(r"^B[-–—]?", "", tail)
+    return tail
 
 
 def build_aircrafts(

@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from html import escape
 from io import BytesIO
 
 import pandas as pd
@@ -22,9 +23,11 @@ from core.models import AllocationConfig
 from core.allocator import allocate
 from core.excel_writer import build_excel_bytes
 from core.airports import airport_name
+from public_access import access_payload, refresh_public_url
 
-APP_VERSION = "V 1.1.1"
+APP_VERSION = "V 1.1.2"
 AUTHOR = "王迪"
+CO_CREATOR = "刘泓妤"
 TECH_SUPPORT = "AI 智能分配"
 
 st.set_page_config(
@@ -95,6 +98,30 @@ button[kind="header"][aria-label*="sidebar" i]{ display:none !important; }
 .upload-hero .hero-title{ color: var(--accent); font-size: 1.45rem; font-weight: 700; letter-spacing: 1px; margin: 0 0 4px 0; }
 .upload-hero .hero-sub{ color: var(--muted); font-size: 0.9rem; margin: 0 0 10px 0; }
 
+.public-access-card{
+  background: linear-gradient(135deg, rgba(79,195,247,.10) 0%, rgba(13,33,55,.66) 100%);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 16px; margin: 0 0 14px 0;
+  box-shadow: 0 0 18px rgba(79,195,247,.10);
+}
+.public-access-head{
+  display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;
+}
+.public-access-title{ color:var(--accent); font-weight:700; letter-spacing:1px; font-size:.94rem; }
+.public-access-badge{
+  border:1px solid var(--line-strong); color:var(--accent); border-radius:999px;
+  padding:2px 10px; font-size:.72rem; white-space:nowrap;
+}
+.public-url-value{
+  color:#d7f0ff; border:1px solid var(--line); background:rgba(0,0,0,.18);
+  border-radius:8px; padding:8px 10px; font-size:.84rem; word-break:break-all;
+}
+.public-access-hint{ color:var(--muted); font-size:.76rem; line-height:1.6; margin-top:8px; }
+.public-access-mini{
+  display:flex; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:.72rem; margin-top:6px;
+}
+.public-access-mini strong{ color:var(--text); font-weight:600; }
+
 [data-testid="stFileUploader"] section{
   background: var(--panel) !important; border: 1.5px dashed var(--accent) !important;
   border-radius: 10px !important; min-height: 130px; padding: 18px !important;
@@ -132,7 +159,7 @@ button[kind="header"][aria-label*="sidebar" i]{ display:none !important; }
 .seat-panel.s1 .seat-stat .kv .v{ color:#dfe5ea; }
 .seat-panel.s2 .seat-stat .kv .v{ color:#7fc0f3; }
 .tail-chips{ display:flex; gap:6px; flex-wrap:wrap; }
-.tail-chip{ font-size:.85rem; font-weight:700; padding:3px 9px; border-radius:6px; font-family:"Menlo",monospace; }
+.tail-chip{ font-size:.85rem; font-weight:700; padding:3px 9px; border-radius:6px; font-family:"Arial","Helvetica Neue",sans-serif; letter-spacing:.04em; font-variant-ligatures:none; }
 .seat-panel.s1 .tail-chip{ background:#e7e9ec; color:#2b2f33; }
 .seat-panel.s2 .tail-chip{ background:#bdd7ee; color:#143a5c; }
 
@@ -182,6 +209,7 @@ st.markdown(
         <div class="badge-version">{APP_VERSION}</div>
         <table class="credits">
             <tr><td class="t-label">系统开发</td><td class="t-colon">：</td><td class="t-name">{AUTHOR}</td></tr>
+            <tr><td class="t-label">共创</td><td class="t-colon">：</td><td class="t-name">{CO_CREATOR}</td></tr>
             <tr><td class="t-label">分配引擎</td><td class="t-colon">：</td><td class="t-name">{TECH_SUPPORT}</td></tr>
         </table>
     </div>
@@ -191,6 +219,63 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
+
+@st.fragment(run_every="15s")
+def render_public_access_panel() -> None:
+    payload = access_payload()
+    left, right = st.columns([1, 4])
+    if payload.get("refreshable") and left.button("刷新公网网址", key="refresh_public_url", use_container_width=True):
+        with st.spinner("正在生成带班分飞机独立公网网址..."):
+            try:
+                payload = refresh_public_url()
+                if payload.get("public_url"):
+                    st.toast("公网网址已刷新")
+                else:
+                    st.warning(payload.get("hint") or "公网网址仍在生成中，请稍后再试。")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"公网网址刷新失败：{exc}")
+                payload = access_payload()
+    elif not payload.get("refreshable"):
+        left.markdown(
+            "<div class='public-access-card' style='text-align:center;font-weight:700;color:var(--accent);'>固定网址</div>",
+            unsafe_allow_html=True,
+        )
+
+    public_url = payload.get("public_url") or ""
+    badge_map = {
+        "online": "公网可用",
+        "starting": "生成中",
+        "offline": "隧道离线",
+        "local_offline": "本地未启动",
+        "error": "生成失败",
+    }
+    badge = badge_map.get(str(payload.get("public_status") or ""), "未生成")
+    url_text = public_url or "未生成；点击左侧按钮生成 8531 独立临时网址"
+    hint = str(payload.get("hint") or "")
+    previous = str(payload.get("previous_public_url") or "")
+    if payload.get("url_changed") and previous:
+        hint = f"{hint} 旧地址：{previous}"
+    right.markdown(
+        f"""
+<div class="public-access-card">
+  <div class="public-access-head">
+    <div class="public-access-title">带班分飞机 · 独立公网网址</div>
+    <div class="public-access-badge">{escape(badge)}</div>
+  </div>
+  <div class="public-url-value">{escape(url_text)}</div>
+  <div class="public-access-mini">
+    <span>本机：<strong>{escape(str(payload.get("local_url") or "-"))}</strong></span>
+    <span>局域网：<strong>{escape(str(payload.get("lan_url") or "未识别"))}</strong></span>
+  </div>
+  <div class="public-access-hint">{escape(hint)}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+render_public_access_panel()
 
 # ─────────────────────────────────────────
 # 上传区
@@ -221,7 +306,7 @@ if not uploaded:
 
 **AI 兼顾的均衡目标（多目标加权最优）**：
 1. **总任务量** — 两席位航班总数尽量接近
-2. **时段忙闲** — 上午 / 下午（按分时点切分）两席位都不过载
+2. **时段忙闲** — 时段A/B 为首位均衡目标；08:00 前、24:00 后不参与 A/B 拆分
 3. **C 类机场** — 高高原/复杂机场航班均分（最受关注）
 4. **B 类机场** — 次复杂机场航班均分
 5. **C/B 同目的地** — 同一目的地机场（如丽江）尽量拆到两个席位
@@ -332,7 +417,12 @@ if run or st.session_state.get("dispatch_done"):
 
     # 席位面板
     def _chips(tails):
-        return "".join(f'<span class="tail-chip">{t}</span>' for t in tails)
+        # 页面上明确显示航空器注册号格式，避免截图/OCR 将 AM、AN 等英文后缀
+        # 误识别为中文；lang/translate 属性也防止浏览器翻译机号。
+        return "".join(
+            f'<span class="tail-chip" lang="en" translate="no" dir="ltr">B-{t}</span>'
+            for t in tails
+        )
 
     def _seat_html(seat, cls):
         return f"""
@@ -377,7 +467,12 @@ if run or st.session_state.get("dispatch_done"):
             ac = by_tail.get(tail)
             if ac is None:
                 continue
-            a, b = ac.n_segment(cfg.split_minutes)
+            a, b = ac.n_segment(
+                cfg.split_minutes,
+                cfg.segment_start_minutes,
+                cfg.segment_end_minutes,
+                cfg.service_date,
+            )
             legs = " ; ".join(
                 f"{f.dep_hhmm} {airport_name(f.dep_icao)}→{airport_name(f.arr_icao)}"
                 for f in ac.flights
@@ -418,7 +513,7 @@ if run or st.session_state.get("dispatch_done"):
 
 st.markdown(
     f"<div style='text-align:center; color:var(--muted); font-size:.78rem; padding: 12px 0;'>"
-    f"带班AI分飞机 {APP_VERSION} · 系统开发 {AUTHOR} · 放行签派席位智能均衡"
+    f"带班AI分飞机 {APP_VERSION} · 系统开发 {AUTHOR} · 共创 {CO_CREATOR} · 放行签派席位智能均衡"
     f"</div>",
     unsafe_allow_html=True,
 )

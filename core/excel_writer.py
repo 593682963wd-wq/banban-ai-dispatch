@@ -62,7 +62,12 @@ def build_workbook(result: AllocationResult) -> Workbook:
             ac = by_tail.get(tail)
             if ac is None:
                 continue
-            a, b = ac.n_segment(result.config.split_minutes)
+            a, b = ac.n_segment(
+                result.config.split_minutes,
+                result.config.segment_start_minutes,
+                result.config.segment_end_minutes,
+                result.config.service_date,
+            )
             ov = ac.overnight_dest
             ws.append([
                 seat.name, ac.tail, ac.ac_type, ac.n_flights,

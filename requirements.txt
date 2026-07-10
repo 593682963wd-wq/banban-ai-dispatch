@@ -3,4 +3,4 @@
 # 桌面端请用 requirements-desktop.txt
 pandas>=2.0
 openpyxl>=3.1
-streamlit>=1.30
+streamlit>=1.56

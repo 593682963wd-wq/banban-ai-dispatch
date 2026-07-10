@@ -31,8 +31,9 @@ from core.excel_writer import write_allocation_excel
 from core.models import AllocationConfig
 from core.parser import build_aircrafts, infer_date, load_dynamic_list, resolve_columns
 
-APP_VERSION = "V 1.1.1"
+APP_VERSION = "V 1.1.2"
 AUTHOR = "王迪"
+CO_CREATOR = "刘泓妤"
 
 SEAT1_COLOR = "#E7E9EC"  # 浅灰 → 放行签派一
 SEAT2_COLOR = "#BDD7EE"  # 浅蓝 → 放行签派二
@@ -116,7 +117,7 @@ class MainWindow(QMainWindow):
             f"<span style='color:#4fc3f7; font-size:24px; font-weight:700; letter-spacing:2px;'>"
             f"✈ 带班AI分飞机</span><br>"
             f"<span style='color:#6d93b2; font-size:12px;'>放行签派席位智能均衡分配 · "
-            f"系统开发 {AUTHOR} · {APP_VERSION}</span></div>"
+            f"系统开发 {AUTHOR} · 共创 {CO_CREATOR} · {APP_VERSION}</span></div>"
         )
         header.setTextFormat(Qt.RichText)
         root.addWidget(header)
@@ -301,7 +302,12 @@ class MainWindow(QMainWindow):
                 ac = by_tail.get(tail)
                 if ac is None:
                     continue
-                a, b = ac.n_segment(result.config.split_minutes)
+                a, b = ac.n_segment(
+                    result.config.split_minutes,
+                    result.config.segment_start_minutes,
+                    result.config.segment_end_minutes,
+                    result.config.service_date,
+                )
                 ov = ac.overnight_dest
                 legs = " ; ".join(
                     f"{f.dep_hhmm} {airport_name(f.dep_icao)}→{airport_name(f.arr_icao)}"

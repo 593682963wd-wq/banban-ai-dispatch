@@ -22,6 +22,15 @@ from .models import Aircraft, AllocationConfig, AllocationResult, SeatPlan
 ENUM_LIMIT = 20
 
 
+def _segment_counts(ac: Aircraft, config: AllocationConfig) -> tuple[int, int]:
+    return ac.n_segment(
+        config.split_minutes,
+        config.segment_start_minutes,
+        config.segment_end_minutes,
+        config.service_date,
+    )
+
+
 def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
     """预计算每架飞机的指标特征 + 冲突对 + 键集合。"""
     feats = []
@@ -32,7 +41,7 @@ def _aircraft_features(aircrafts: list[Aircraft], config: AllocationConfig):
     n_windows = len(config.handover_windows)
 
     for ac in aircrafts:
-        seg_a, seg_b = ac.n_segment(config.split_minutes)
+        seg_a, seg_b = _segment_counts(ac, config)
         rc = ac.region_counts()
         dc = ac.dest_counts()
         cdc = ac.c_class_dest_counts()
@@ -210,6 +219,26 @@ def _score_assignment(
     return score, metrics, g
 
 
+def _segment_priority(metrics: dict) -> tuple[float, float, float, float]:
+    """时段A/B 是首位目标：先压低单段最大差，再压低总差。"""
+    d_seg_a = metrics["时段A差"]
+    d_seg_b = metrics["时段B差"]
+    return (max(d_seg_a, d_seg_b), d_seg_a + d_seg_b, d_seg_a, d_seg_b)
+
+
+def _assignment_key(score, metrics, group_totals, assignment) -> tuple:
+    """分配比较键。
+
+    A/B 时段均衡先于所有其他综合得分，再用原有多目标分数细分。
+    """
+    return (
+        *_segment_priority(metrics),
+        score,
+        abs(group_totals[0]["n"] - group_totals[1]["n"]),
+        abs(sum(1 for a in assignment if a == 0) - sum(1 for a in assignment if a == 1)),
+    )
+
+
 def _iter_enumerate(n: int):
     """枚举所有分配，固定第 0 架在席位 0（去镜像对称）。"""
     for mask in range(0, 1 << (n - 1)):
@@ -244,7 +273,7 @@ def _local_search(
             feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
             conflict, overnight_landing_conflict, assignment, config
         )
-        cur_key = (score, abs(g[0]["n"] - g[1]["n"]))
+        cur_key = _assignment_key(score, metrics, g, assignment)
         improved = True
         steps = 0
         while improved and steps < iters:
@@ -255,7 +284,7 @@ def _local_search(
                     feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
                     conflict, overnight_landing_conflict, assignment, config
                 )
-                k2 = (s2, abs(g2[0]["n"] - g2[1]["n"]))
+                k2 = _assignment_key(s2, m2, g2, assignment)
                 if k2 < cur_key:
                     cur_key = k2
                     improved = True
@@ -271,7 +300,7 @@ def _local_search(
 def _add_aircraft_to_plan(ac: Aircraft, plan: SeatPlan, config: AllocationConfig) -> None:
     plan.tails.append(ac.tail)
     plan.n_flights += ac.n_flights
-    a, b = ac.n_segment(config.split_minutes)
+    a, b = _segment_counts(ac, config)
     plan.n_seg_a += a
     plan.n_seg_b += b
     plan.n_c_class += ac.n_c_class
@@ -326,10 +355,8 @@ def allocate(aircrafts: list[Aircraft], config: Optional[AllocationConfig] = Non
                 feats, region_keys, dest_keys, c_dest_keys, b_dest_keys,
                 conflict, overnight_landing_conflict, assignment, config
             )
-            # tie-break：分数 → 总数差 → 飞机数差（更稳定均衡）
-            key = (score, abs(g[0]["n"] - g[1]["n"]), abs(
-                sum(1 for a in assignment if a == 0) - sum(1 for a in assignment if a == 1)
-            ))
+            # tie-break：时段A/B首位均衡 → 综合分 → 总数差 → 飞机数差（更稳定均衡）
+            key = _assignment_key(score, metrics, g, assignment)
             if best_key is None or key < best_key:
                 best_key = key
                 best_assignment = assignment[:]
